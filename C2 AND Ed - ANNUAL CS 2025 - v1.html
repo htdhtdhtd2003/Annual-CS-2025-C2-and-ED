@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Extract Drug Info</title>
+  <style>
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+    td[contenteditable="true"]:empty:before {
+      content: "Click to edit";
+      color: gray;
+    }
+    .row-buttons {
+      display: flex;
+      gap: 6px;
+    }
+    #modalOverlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 999;
+    }
+    #modalOverlay > div {
+      background: white;
+      padding: 20px;
+      width: 300px;
+      margin: 100px auto;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h3></h3>
+  <textarea id="rawData" rows="10" cols="100" placeholder="Paste C2 or Rx Valuation Inventory Here"></textarea>
+  <br><br>
+  <button id="extractBtn" onclick="extractData()">Extract C2 Info</button>
+  <button onclick="extractEDMedsData()">Extract ED Med Info</button>
+  
+  <button onclick="clearInputs()">Clear Input</button>
+  
+  
+<h3>DEA Class and Dosage Form G.O. list</h3>
+<textarea id="deaDosageData" rows="10" cols="100" placeholder="Paste G.O. list here"></textarea>
+<br>
+<button onclick="updateDEAAndDosage()">Extract G.O. list</button>
+<button onclick="clearInputs1()">Clear Input</button>
+<br>
+<button onclick="guessDosageForms()">Dosage Forms from Product Names</button>
+
+  <h3>Update Will Call(C2)</h3>
+  <label for="searchNDC">Enter NDC and Quantity (e.g., 12345678900 10):</label>
+  <input type="text" id="searchNDC" placeholder="NDC Quantity">
+  <button onclick="updateWillCall()">Update</button>
+
+  <h3>Update Waiting to Return(C2)</h3>
+  <label for="returnNDC">Enter NDC and Quantity (e.g., 12345678900 5):</label>
+  <input type="text" id="returnNDC" placeholder="NDC Quantity">
+  <button onclick="updateWaitingReturn()">Update</button>
+
+  <h3>Update Will Call (ED Med Table)</h3>
+  <label for="edSearchNDC">Enter NDC and Quantity (e.g., 12345678900 10):</label>
+  <input type="text" id="edSearchNDC" placeholder="NDC Quantity">
+  <button onclick="updateEDWillCall()">Update</button>
+
+  <h3>Update Waiting to Return (ED Med Table)</h3>
+  <label for="edReturnNDC">Enter NDC and Quantity (e.g., 12345678900 5):</label>
+  <input type="text" id="edReturnNDC" placeholder="NDC Quantity">
+  <button onclick="updateEDWaitingReturn()">Update</button>
+
+<h3>Export & Import Data</h3>
+<button onclick="exportTableData()">Export Table Data</button>
+<input type="file" accept=".json" onchange="importTableData(event)">
+<br>
+<button id="openInNewWindowBtn">Print C2</button>
+<button id="openInNewWindowBtn1">Print Ed</button>
+
+  <table id="outputTable" style="display: none;">
+    <thead>
+      <tr>
+        <th>Product Name</th>
+        <th>NDC</th>
+        <th>DEA Class Code</th>
+        <th>Dosage Form</th>
+        <th>Pack Size</th>
+        <th>Total #Pkgs. (Bottles)</th>
+        <th>Total in Inventory</th>
+        <th>Total Will Call</th>
+        <th>Total Waiting to Return</th>
+        <th>Grand Total on Hand</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="outputBody"></tbody>
+  </table>
+
+  <table id="edOutputTable" style="display: none;">
+    <thead>
+      <tr>
+        <th>Product Name</th>
+        <th>NDC</th>
+        <th>DEA Class Code</th>
+        <th>Dosage Form</th>
+        <th>Pack Size</th>
+        <th>Total #Pkgs. (Bottles)</th>
+        <th>Total in Inventory</th>
+        <th>Total Will Call</th>
+        <th>Total Waiting to Return</th>
+        <th>Grand Total on Hand</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="modalOverlay">
+    <div>
+      <p id="modalMessage"></p>
+      <button onclick="confirmModal(true)">Yes</button>
+      <button onclick="confirmModal(false)">No</button>
+    </div>
+  </div>
+
+  <script>
+    let modalCallback = null;
+           //"GABAPENTIN", "GRALISE", "HORIZANT",
+
+    const edKeywords = [
+      "VIAGRA", "REVATIO", "SILDENAFIL",
+      "CIALIS", "TADALAFIL", "LEVITRA",
+      "STAXYN", "VARDENAFIL", "STENDRA", "AVANAFIL"
+    ];
+
+    function showModal(message, callback) {
+      document.getElementById("modalMessage").innerText = message;
+      document.getElementById("modalOverlay").style.display = "block";
+      modalCallback = callback;
+    }
+    
+    //clear paste data
+    function clearInputs() {
+  // Clear raw data textarea
+  document.getElementById("rawData").value = "";
+
+}
+
+ function clearInputs1() {
+  // Clear raw data textarea
+  document.getElementById("deaDosageData").value = "";
+}
+
+function confirmModal(answer) {
+      document.getElementById("modalOverlay").style.display = "none";
+      if (modalCallback) modalCallback(answer);
+      modalCallback = null;
+    }
+
+    function formatNDC(input) {
+      if (input.length === 11) {
+        return `${input.slice(0, 5)}-${input.slice(5, 9)}-${input.slice(9)}`;
+      }
+      return input;
+    }
+
+   function generateRowHTML(productName, ndc, deaClassCode, dosageForm, packSize, totalPkgs, totalInInventory, totalWillCall, totalWaitingToReturn, grandTotal) {
+  // Auto-calculate total packages
+  const parsedPackSize = parseFloat(packSize);
+  const parsedInventory = parseFloat(totalInInventory);
+  const calculatedPkgs = parsedPackSize > 0 ? Math.ceil(parsedInventory / parsedPackSize) : 0;
+
+  // Auto-calculate grand total
+  const parsedWillCall = parseFloat(totalWillCall);
+  const parsedReturn = parseFloat(totalWaitingToReturn);
+  const calculatedGrandTotal = parsedInventory + parsedWillCall + parsedReturn;
+
+  return `
+    <td contenteditable="true">${productName}</td>
+    <td contenteditable="true">${ndc}</td>
+    <td contenteditable="true">${deaClassCode}</td>
+    <td contenteditable="true">${dosageForm}</td>
+    <td contenteditable="true" oninput="updateGrandTotal(this)">${packSize}</td>
+    <td contenteditable="false">${calculatedPkgs}</td>
+    <td contenteditable="true" oninput="updateGrandTotal(this)">${totalInInventory}</td>
+    <td contenteditable="true" oninput="updateGrandTotal(this)">${totalWillCall}</td>
+    <td contenteditable="true" oninput="updateGrandTotal(this)">${totalWaitingToReturn}</td>
+    <td contenteditable="false">${calculatedGrandTotal}</td>
+    <td class="row-buttons">
+      <button onclick="addRow(this)">Add</button>
+      <button onclick="deleteRow(this)">Delete</button>
+    </td>
+  `;
+}
+
+function updateGrandTotal(cell) {
+  const row = cell.closest("tr");
+  const totalInInventory = parseFloat(row.cells[6].innerText) || 0;
+  const totalWillCall = parseFloat(row.cells[7].innerText) || 0;
+  const totalWaitingToReturn = parseFloat(row.cells[8].innerText) || 0;
+
+  // Update Grand Total
+  const grandTotal = totalInInventory + totalWillCall + totalWaitingToReturn;
+  row.cells[9].innerText = grandTotal;
+
+  // Update Total #Pkgs (round up)
+  const packSize = parseFloat(row.cells[4].innerText);
+  if (packSize > 0) {
+    const pkgCount = Math.ceil(totalInInventory / packSize);
+    row.cells[5].innerText = isNaN(pkgCount) ? 0 : pkgCount;
+  } else {
+    row.cells[5].innerText = 0;
+  }
+}
+
+    
+    
+    
+    function addRow(button) {
+      const row = button.closest("tr");
+      const newRow = row.cloneNode(true);
+      const cells = newRow.querySelectorAll("td");
+      cells.forEach((cell, index) => {
+        if (index !== cells.length - 1) {
+          cell.innerText = "";
+        }
+      });
+      row.parentNode.insertBefore(newRow, row.nextSibling);
+    }
+
+    function deleteRow(button) {
+      button.closest("tr").remove();
+    }
+
+    function extractData() {
+      const textarea = document.getElementById("rawData");
+      const input = textarea.value.trim();
+      const lines = input.split("\n");
+      const outputBody = document.getElementById("outputBody");
+      outputBody.innerHTML = "";
+
+      const ndcPattern = /^\d{4,5}-\d{3,4}-\d{1,2}$/;
+      const dollarPattern = /^\$\d+(\.\d{2})?$/;
+
+      lines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        const ndcIndex = parts.findIndex(p => ndcPattern.test(p));
+        const dollarIndex = parts.findIndex(p => dollarPattern.test(p));
+        if (ndcIndex === -1 || ndcIndex + 1 >= parts.length || dollarIndex === -1 || dollarIndex + 1 >= parts.length) return;
+        const productName = parts.slice(0, ndcIndex).join(" ");
+        const ndc = parts[ndcIndex];
+        const packSize = parts[ndcIndex + 1];
+        const totalInInventory = parseInt(parts[dollarIndex + 1]) || 0;
+        const row = document.createElement("tr");
+        row.innerHTML = generateRowHTML(productName, ndc, "", "", packSize, 0, totalInInventory, 0, 0, totalInInventory);
+        outputBody.appendChild(row);
+      });
+
+      document.getElementById("outputTable").style.display = outputBody.children.length > 0 ? "table" : "none";
+    }
+
+    function extractEDMedsData() {
+      const textarea = document.getElementById("rawData");
+      const input = textarea.value.trim();
+      const lines = input.split("\n");
+      const outputBody = document.querySelector("#edOutputTable tbody");
+      outputBody.innerHTML = "";
+
+      const ndcPattern = /^\d{4,5}-\d{3,4}-\d{1,2}$/;
+      const dollarPattern = /^\$\d+(\.\d{2})?$/;
+
+      lines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        const ndcIndex = parts.findIndex(p => ndcPattern.test(p));
+        const dollarIndex = parts.findIndex(p => dollarPattern.test(p));
+        if (ndcIndex === -1 || ndcIndex + 1 >= parts.length || dollarIndex === -1 || dollarIndex + 1 >= parts.length) return;
+
+        const productName = parts.slice(0, ndcIndex).join(" ").toUpperCase();
+        const isED = edKeywords.some(keyword => productName.includes(keyword));
+        if (!isED) return;
+
+        const ndc = parts[ndcIndex];
+        const packSize = parts[ndcIndex + 1];
+        const totalInInventory = parseInt(parts[dollarIndex + 1]) || 0;
+
+        const row = document.createElement("tr");
+        row.innerHTML = generateRowHTML(productName, ndc, "", "", packSize, 0, totalInInventory, 0, 0, totalInInventory);
+        outputBody.appendChild(row);
+      });
+
+      document.getElementById("edOutputTable").style.display = outputBody.children.length > 0 ? "table" : "none";
+    }
+
+    function updateWillCall() {
+      updateTableWillCall("searchNDC", "#outputTable tbody");
+    }
+
+    function updateWaitingReturn() {
+      updateTableWaitingReturn("returnNDC", "#outputTable tbody");
+    }
+
+    function updateEDWillCall() {
+      updateTableWillCall("edSearchNDC", "#edOutputTable tbody");
+    }
+
+    function updateEDWaitingReturn() {
+      updateTableWaitingReturn("edReturnNDC", "#edOutputTable tbody");
+    }
+
+    function updateTableWillCall(inputId, tableSelector) {
+      const inputEl = document.getElementById(inputId);
+      const input = inputEl.value.trim();
+      const [rawNdc, qtyStr] = input.split(" ");
+      const qty = parseInt(qtyStr);
+
+      if (!rawNdc || isNaN(qty)) {
+        alert("Please enter a valid 11-digit NDC and quantity.");
+        inputEl.focus();
+        return;
+      }
+
+      const formattedNDC = formatNDC(rawNdc);
+      const rows = document.querySelectorAll(`${tableSelector} tr`);
+      let found = false;
+
+      rows.forEach(row => {
+        const rowNDC = row.cells[1].innerText.trim();
+        if (rowNDC === formattedNDC) {
+          const cell = row.cells[7];
+          const current = parseInt(cell.innerText) || 0;
+          cell.innerText = current + qty;
+          updateGrandTotal(cell);
+          found = true;
+        }
+      });
+
+      if (!found) {
+        showModal(`NDC ${formattedNDC} not found. Add as new row?`, confirmed => {
+          if (confirmed) {
+            const tbody = document.querySelector(tableSelector);
+            const row = document.createElement("tr");
+            row.innerHTML = generateRowHTML("", formattedNDC, "", "", "", 0, 0, qty, 0, qty);
+            tbody.appendChild(row);
+            document.querySelector(tableSelector.replace(" tbody", "")).style.display = "table";
+            row.cells[0].focus();
+          }
+        });
+      }
+
+      inputEl.value = "";
+      inputEl.focus();
+    }
+
+    function updateTableWaitingReturn(inputId, tableSelector) {
+      const inputEl = document.getElementById(inputId);
+      const input = inputEl.value.trim();
+      const [rawNdc, qtyStr] = input.split(" ");
+      const qty = parseInt(qtyStr);
+
+      if (!rawNdc || isNaN(qty)) {
+        alert("Please enter a valid 11-digit NDC and quantity.");
+        inputEl.focus();
+        return;
+      }
+
+      const formattedNDC = formatNDC(rawNdc);
+      const rows = document.querySelectorAll(`${tableSelector} tr`);
+      let found = false;
+
+      rows.forEach(row => {
+        const rowNDC = row.cells[1].innerText.trim();
+        if (rowNDC === formattedNDC) {
+          const cell = row.cells[8];
+          const current = parseInt(cell.innerText) || 0;
+          cell.innerText = current + qty;
+          updateGrandTotal(cell);
+          found = true;
+        }
+      });
+
+      if (!found) {
+        showModal(`NDC ${formattedNDC} not found. Add as new row?`, confirmed => {
+          if (confirmed) {
+            const tbody = document.querySelector(tableSelector);
+            const row = document.createElement("tr");
+            row.innerHTML = generateRowHTML("", formattedNDC, "", "", "", 0, 0, 0, qty, qty);
+            tbody.appendChild(row);
+            document.querySelector(tableSelector.replace(" tbody", "")).style.display = "table";
+            row.cells[0].focus();
+          }
+        });
+      }
+
+      inputEl.value = "";
+      inputEl.focus();
+    }
+    
+function updateDEAAndDosage() {
+  const input = document.getElementById("deaDosageData").value.trim();
+  const lines = input.split("\n");
+
+  const allTables = ["#outputTable tbody", "#edOutputTable tbody"];
+
+const detectDosageForm = (productName) => {
+  const name = productName.toUpperCase();
+
+  if (name.includes("CHEWABLE") || name.includes("CHEW TAB") || name.includes("CHEW TB"))
+    return "TABLET, CHEWABLE";
+  if (name.includes("TABLET") || name.includes("TAB"))
+    return "TABLET";
+  if (name.includes("CAPSULE") || name.includes("CAP") || name.includes("CP"))
+    return "CAPSULE";
+  if (name.includes("PATCH"))
+    return "PATCH";
+  if (name.includes("SOLUTION") || name.includes("SOLN"))
+    return "SOLUTION";
+  if (name.includes("SUSPENSION") || name.includes("SUSP"))
+    return "SUSPENSION";
+  if (name.includes("SYRUP"))
+    return "SYRUP";
+  if (name.includes("GEL"))
+    return "GEL";
+  if (name.includes("OINTMENT") || name.includes("OINT"))
+    return "OINTMENT";
+
+  return "";
+};
+
+   
+
+  lines.forEach(line => {
+    const cleanedLine = line.replace(/\s+/g, " ").trim();
+    const parts = cleanedLine.split(" ");
+    if (parts.length < 5) return;
+
+    const ndcRaw = parts.find(p => /^\d{11}$/.test(p));
+    if (!ndcRaw) return;
+
+    const ndcIndex = parts.indexOf(ndcRaw);
+    const deaClass = parts[ndcIndex + 1] || "";
+    const dosageFormFromInput = parts[ndcIndex + 2] || "";
+
+    allTables.forEach(selector => {
+      const rows = document.querySelectorAll(`${selector} tr`);
+      rows.forEach(row => {
+        const rowNdc = row.cells[1].innerText.replace(/-/g, "").trim();
+        if (rowNdc === ndcRaw) {
+          row.cells[2].innerText = deaClass;
+
+          let dosageForm = dosageFormFromInput.trim();
+          if (!dosageForm) {
+            const productName = row.cells[0].innerText.trim();
+            dosageForm = detectDosageForm(productName);
+          }
+
+          row.cells[3].innerText = dosageForm;
+        }
+      });
+    });
+  });
+}
+
+function exportTableData() {
+  const extractRows = (selector) => {
+    return Array.from(document.querySelectorAll(`${selector} tr`)).map(row => {
+      return Array.from(row.cells).slice(0, 10).map(cell => cell.innerText.trim());
+    });
+  };
+
+  const data = {
+    general: extractRows("#outputTable tbody"),
+    ed: extractRows("#edOutputTable tbody")
+  };
+
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "c2andED.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url)
+}
+
+//export and import
+function importTableData(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const data = JSON.parse(e.target.result);
+    const fillTable = (rows, selector) => {
+      const tbody = document.querySelector(selector);
+      tbody.innerHTML = "";
+      rows.forEach(rowData => {
+        const row = document.createElement("tr");
+        row.innerHTML = generateRowHTML(...rowData);
+        tbody.appendChild(row);
+      });
+      document.querySelector(selector.replace(" tbody", "")).style.display = rows.length > 0 ? "table" : "none";
+    };
+
+    if (data.general) fillTable(data.general, "#outputTable tbody");
+    if (data.ed) fillTable(data.ed, "#edOutputTable tbody");
+  };
+  reader.readAsText(file);
+}
+
+// Updated: General Meds Table
+document.getElementById("openInNewWindowBtn").addEventListener("click", function () {
+  const tableClone = document.getElementById("outputTable").cloneNode(true);
+  removeLastColumn(tableClone);
+  const newWindow = window.open("", "_blank", "width=800,height=600");
+  newWindow.document.write(`
+    <html>
+      <head>
+        <title>Drug Inventory Table</title>
+        <style>
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: left;
+          }
+          th {
+            background-color: #f2f2f2;
+          }
+        </style>
+      </head>
+      <body>
+        <h3>Drug Inventory Table</h3>
+        ${tableClone.outerHTML}
+      </body>
+    </html>
+  `);
+  newWindow.document.close();
+
+  // Trigger print after the window content is fully loaded
+  newWindow.onload = function() {
+    newWindow.print();
+  };
+});
+
+// Updated: ED Meds Table
+document.getElementById("openInNewWindowBtn1").addEventListener("click", function () {
+  const tableClone = document.getElementById("edOutputTable").cloneNode(true);
+  removeLastColumn(tableClone);
+  const newWindow = window.open("", "_blank", "width=800,height=600");
+  newWindow.document.write(`
+    <html>
+      <head>
+        <title>ED Meds Inventory Table</title>
+        <style>
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: left;
+          }
+          th {
+            background-color: #f2f2f2;
+          }
+        </style>
+      </head>
+      <body>
+        <h3>ED Meds Inventory Table</h3>
+        ${tableClone.outerHTML}
+      </body>
+    </html>
+  `);
+  newWindow.document.close();
+
+  // Trigger print after the window content is fully loaded
+  newWindow.onload = function() {
+    newWindow.print();
+  };
+});
+
+// Helper to remove last column from cloned table
+function removeLastColumn(table) {
+  const rows = table.querySelectorAll("tr");
+  rows.forEach(row => {
+    if (row.children.length > 0) {
+      row.removeChild(row.lastElementChild);
+    }
+  });
+}
+
+function guessDosageForms() {
+  const dosageRules = [
+    { keywords: ["chewable tablet", "chew tab", "chew tb"], value: "TABLET, CHEWABLE" },
+    { keywords: ["tablet", "tab", "tb"], value: "TABLET" },
+    { keywords: ["capsule", "cap", "cp"], value: "CAPSULE" },
+    { keywords: ["patch"], value: "PATCH" },
+    { keywords: ["solution", "soln"], value: "SOLUTION" },
+    { keywords: ["suspension", "susp"], value: "SUSPENSION" },
+    { keywords: ["syrup"], value: "SYRUP" },
+    { keywords: ["gel"], value: "GEL" },
+    { keywords: ["ointment", "oint"], value: "OINTMENT" }
+  ];
+
+  const tableSelectors = ["#outputTable tbody", "#edOutputTable tbody"];
+
+  tableSelectors.forEach(selector => {
+    const rows = document.querySelectorAll(`${selector} tr`);
+    rows.forEach(row => {
+      const productName = row.cells[0].innerText.trim().toLowerCase();
+      const dosageCell = row.cells[3];
+      if (dosageCell.innerText.trim() !== "") return;
+
+      const endText = productName.slice(-10);
+      for (const rule of dosageRules) {
+        if (rule.keywords.some(keyword => endText.includes(keyword))) {
+          dosageCell.innerText = rule.value;
+          break;
+        }
+      }
+    });
+  });
+
+ // alert("Dosage form guessing completed.");
+}
+
+  </script>
+</body>
+</html>
